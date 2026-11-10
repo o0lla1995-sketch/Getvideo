@@ -171,6 +171,33 @@ def guess_mp4_quality(url: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Detect "video deleted" pages. XVideos (and similar sites) return HTTP 200
+# with a tiny page that says "This video has been deleted" when the video is
+# gone. Without this check the server reports a generic "Extraction failed"
+# which is misleading — the extraction logic is fine, the VIDEO is gone.
+# ─────────────────────────────────────────────────────────────────────────────
+DELETED_PATTERNS = [
+    'this video has been deleted',
+    'video has been removed',
+    'this video is no longer available',
+    'video not available',
+    'video unavailable',
+    'has been flagged',
+    'deactivated',
+]
+
+
+def detect_deleted_page(html: str) -> bool:
+    low = (html or '').lower()
+    # Deleted pages are SMALL (no player JS). Guard against false positives
+    # on normal pages that merely mention these words in comments.
+    if len(low) < 20000:
+        return any(p in low for p in DELETED_PATTERNS)
+    # On large pages only match the explicit deletion banner.
+    return 'this video has been deleted' in low or 'video has been removed' in low
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN EXTRACTION ENDPOINT
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/extract-url")
@@ -180,6 +207,15 @@ async def extract_url(url: str = Query(...)):
         if response.status_code != 200:
             return {"success": False, "error": f"Source returned HTTP {response.status_code}"}
         html = response.text
+
+        # Deleted / removed video detection — report it explicitly instead
+        # of the generic "Extraction failed".
+        if detect_deleted_page(html):
+            return {
+                "success": False,
+                "error": "Video was deleted or removed from the source site (no qualities available)",
+                "deleted": True,
+            }
 
         # ── Extract the three base URLs + title ──
         high = None
